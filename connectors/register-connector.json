@@ -1,0 +1,20 @@
+﻿
+{
+  "name": "postgres-customers-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "database.hostname": "host.docker.internal",
+    "database.port": "5432",
+    "database.user": "debezium_user",
+    "database.password": "REPLACE_WITH_YOUR_PASSWORD",
+    "database.dbname": "cdc_demo",
+    "topic.prefix": "localserver",
+    "plugin.name": "pgoutput",
+    "slot.name": "debezium_cdc_demo",
+    "publication.name": "dbz_publication",
+    "publication.autocreate.mode": "disabled",
+    "table.include.list": "public.customers",
+    "snapshot.mode": "initial"
+  }
+}
