@@ -2,6 +2,11 @@ spring:
   application:
     name: streamforge
 
+  elasticsearch:
+    uris: http://localhost:9200
+    username: elastic
+    password: changeme
+
   kafka:
     bootstrap-servers: localhost:9092
 

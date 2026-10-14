@@ -36,3 +36,49 @@ services:
       STATUS_STORAGE_TOPIC: cdc_connect_statuses
     ports:
       - "8083:8083"
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.0.0
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      ELASTIC_PASSWORD: changeme
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -u elastic:changeme http://localhost:9200/_cluster/health | grep -qE 'green|yellow'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  kibana-setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.0.0
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >
+        curl -s -f -X POST -u elastic:changeme -H 'Content-Type: application/json'
+        http://elasticsearch:9200/_security/user/kibana_system/_password
+        -d '{"password":"changeme"}'
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.0.0
+    depends_on:
+      kibana-setup:
+        condition: service_completed_successfully
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      ELASTICSEARCH_USERNAME: kibana_system
+      ELASTICSEARCH_PASSWORD: changeme
+    ports:
+      - "5601:5601"
+
+volumes:
+  esdata:

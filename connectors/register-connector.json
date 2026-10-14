@@ -1,6 +1,6 @@
-﻿
+
 {
-  "name": "postgres-customers-connector",
+  "name": "postgres-customers-connector-v2",
   "config": {
     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
     "tasks.max": "1",
@@ -11,10 +11,10 @@
     "database.dbname": "cdc_demo",
     "topic.prefix": "localserver",
     "plugin.name": "pgoutput",
-    "slot.name": "debezium_cdc_demo",
+    "slot.name": "debezium_cdc_demo_v2",
     "publication.name": "dbz_publication",
     "publication.autocreate.mode": "disabled",
-    "table.include.list": "public.customers",
+    "table.include.list": "public.customer,public.address",
     "snapshot.mode": "initial"
   }
 }
