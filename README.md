@@ -22,6 +22,8 @@ PostgreSQL (Windows)
                               CustomerDocumentIndexer (@KafkaListener)
                                                          ▼
                               Elasticsearch index: customer-search ──► Kibana
+                                                                        ▲
+Natural-language search → Spring Boot → LiteLLM → OpenRouter ──────────┘
 ```
 
 ## Prerequisites
@@ -30,26 +32,29 @@ PostgreSQL (Windows)
 - PostgreSQL installed and running locally
 - Docker Desktop installed and running (about 4 GB of memory free for Elasticsearch and Kibana)
 - Java 21 (the Gradle wrapper `gradlew` is included)
+- An OpenRouter API key (used by LiteLLM for the configured free chat models)
 - Access to PostgreSQL as an administrator
 - `psql` or pgAdmin
 
 ## Quick start (after PostgreSQL is prepared)
 
-Complete steps 1–4 once (logical replication, demo database and tables, Debezium user, publication). Then, from `C:\Workspace\StreamForge`:
+Complete steps 1–4 once (logical replication, demo database and tables, Debezium user, publication). Copy `.env.example` to `.env`, add your OpenRouter API key, and set unique random values for `LITELLM_MASTER_KEY` and `LITELLM_DB_PASSWORD`. The LiteLLM master key must start with `sk-`. The database password is embedded in LiteLLM's PostgreSQL URL, so use URL-safe characters (a 32-byte hex value is suitable). Then, from `C:\Workspace\StreamForge`:
 
-1. Start Kafka, ZooKeeper, Kafka Connect, Elasticsearch and Kibana: `docker compose up -d` (step 5).
+1. Start the infrastructure and LiteLLM gateway: `docker compose up -d` (step 5).
 2. Put your `debezium_user` password in `connectors\register-connector.json`, then register the connector (step 6).
 3. Confirm the connector and its task are `RUNNING` (step 6).
 4. Start the Spring Boot app: `.\gradlew bootRun` (step 8).
-5. Insert, update or delete rows in `public.customer` / `public.address` and check Elasticsearch or Kibana (step 9).
+5. Insert, update or delete rows in `public.customer` / `public.address` and check Elasticsearch or Kibana (step 9); try AI-assisted search (step 9c).
 
 ## Project layout
 
 | Path | Purpose |
 |---|---|
-| `docker-compose.yml` | ZooKeeper, Kafka, Kafka Connect (Debezium), Elasticsearch, Kibana |
+| `docker-compose.yml` | ZooKeeper, Kafka, Kafka Connect (Debezium), Elasticsearch, Kibana, NGINX, LiteLLM |
+| `litellm\config.yaml` | OpenRouter-backed `chat-default` and `chat-quality` model aliases |
 | `connectors\register-connector.json` | Debezium PostgreSQL connector definition |
-| `src\main\resources\application.yml` | Kafka, Elasticsearch and server settings (port `8081`) |
+| `src\main\resources\application.yml` | Kafka, Elasticsearch, LiteLLM gateway and server settings (port `8081`) |
+| `src\main\java\...\api\AiCustomerSearchController.java` | Natural-language customer search endpoint |
 | `src\main\java\...\config\KafkaConfig.java` | Kafka consumer factory and listener container factory |
 | `src\main\java\...\config\KafkaStreamsConfig.java` | Kafka Streams settings (application id `streamforge-streams`) |
 | `src\main\java\...\streams\CustomerAggregationTopology.java` | Joins customers and addresses into `customer-search-documents` |
@@ -205,6 +210,13 @@ This starts:
 | `elasticsearch` | 9200 | Security on; user `elastic`, password `changeme` |
 | `kibana-setup` | – | One-shot container that sets the `kibana_system` password, then exits |
 | `kibana` | 5601 | Log in with `elastic` / `changeme` |
+| `nginx` | 8080 | Search API proxy; also exposes only `POST /api/customers/ai-search` |
+| `litellm` | 4000 | Local OpenAI-compatible gateway; bound to localhost |
+| `litellm-db` | – | Private PostgreSQL database for LiteLLM UI and gateway data |
+
+Set `OPENROUTER_API_KEY` in `.env` to your OpenRouter key and replace `LITELLM_MASTER_KEY` and `LITELLM_DB_PASSWORD` with unique secrets of your own. Generate the master key with `python -c "import secrets; print('sk-' + secrets.token_hex(32))"` and the database password with `python -c "import secrets; print(secrets.token_hex(32))"`. Paste the results into `.env`. The master key protects your local gateway; it is not an OpenRouter credential. Do not commit `.env` or use real customer data in prompts sent to the external model.
+
+LiteLLM Admin UI: open `http://localhost:4000/ui`, sign in as `admin`, and use `LITELLM_MASTER_KEY` as the password unless you configure separate UI credentials. The UI's key management and spend tracking require the `litellm-db` PostgreSQL service, which Compose starts before LiteLLM. If you previously started LiteLLM without a database, set `LITELLM_DB_PASSWORD` and run `docker compose up -d litellm-db litellm`; existing model API requests still use the same gateway URL. The database contents persist in the `litellm-data` Docker volume.
 
 Wait until Elasticsearch is `healthy` and Kafka Connect responds (it can take a minute; `curl: (52) Empty reply` means it is still starting):
 
@@ -353,6 +365,106 @@ In Kibana (http://localhost:5601, `elastic` / `changeme`): Stack Management → 
 > curl.exe -u elastic:changeme -X DELETE http://localhost:9200/customer-search
 > ```
 
+## 9b. Search API behind NGINX
+
+NGINX (`nginx\nginx.conf`, container port `8080`) proxies `GET /api/customers/**` plus only `POST /api/customers/ai-search` to the Spring Boot app on the host (`host.docker.internal:8081`). It adds per-IP rate limiting, a 10 s cache for GET requests, timeouts and security headers, and blocks all other paths and methods. Start it with `docker compose up -d nginx` (the app must be running).
+
+```powershell
+curl.exe "http://localhost:8080/api/customers/search?q=ann&city=Boston&page=0&size=10"
+curl.exe http://localhost:8080/api/customers/1
+curl.exe http://localhost:8080/healthz
+```
+
+Parameters: `q` (fuzzy text, max 100 chars), `city`, `state`, `page`, `size` (max 50). Responses carry `X-Cache-Status`. A `502` means the Spring Boot app is not running.
+
+## 9c. AI-assisted customer search through LiteLLM
+
+### How it works
+
+```
+Client / Postman → Spring Boot (POST /api/customers/ai-search)
+  → LiteLLM gateway (:4000, POST /v1/chat/completions, model alias chat-default)
+     → pii-mask guardrail (masks email, phone, SSN, card numbers)
+     → OpenRouter free model (nvidia/nemotron-3.5-lightning:free)
+        [if it fails after 2 retries → fallback alias chat-quality = google/gemma-4-31b-it:free]
+  ← JSON filters {q, lastName, city, state}
+  → Spring validates the filters and runs a typed Elasticsearch query
+  ← JSON response {found, message, filters, results}
+```
+
+The model only turns the sentence into filters. It never sees customer data and never builds queries. Spring sends a model **alias** (`chat-default`), and LiteLLM maps it to the real model in `litellm\config.yaml`.
+
+### Model aliases, retries and fallback
+
+| Alias | OpenRouter model | Role |
+|---|---|---|
+| `chat-default` | `nvidia/nemotron-3.5-lightning:free` | Used by Spring (`streamforge.ai.gateway.model`) |
+| `chat-quality` | `google/gemma-4-31b-it:free` | Fallback when `chat-default` fails |
+
+`router_settings` in `litellm\config.yaml` sets `num_retries: 2` and `chat-default → chat-quality`. Set `LITELLM_MODEL=chat-quality` to call the second alias directly. Models added in the LiteLLM UI are stored in the `litellm-db` volume and picked up automatically, but they are not in git; keep the reproducible setup in `config.yaml`.
+
+### PII guardrail
+
+`litellm\config.yaml` defines the built-in `pii-mask` guardrail (`litellm_content_filter`, `pre_call`, `default_on: true`). It masks email, US phone, SSN and Visa card numbers in prompts before they reach OpenRouter. Last names are intentionally not masked because they are the search filter. Test it:
+
+```powershell
+$k = (Get-Content .env | Where-Object { $_ -match '^LITELLM_MASTER_KEY=' }) -replace '^LITELLM_MASTER_KEY=', ''
+$b = @{ guardrail_name = 'pii-mask'; text = 'Find john@example.com phone 919-555-1234 last name Smith' } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://localhost:4000/guardrails/apply_guardrail -Headers @{ Authorization = "Bearer $k" } -ContentType application/json -Body $b
+```
+
+Expected: `Find [EMAIL_REDACTED] phone [US_PHONE_REDACTED] last name Smith`. In the UI Playground, select `pii-mask`. Guardrails created only in the UI with the Presidio provider will not load unless Presidio analyzer/anonymizer containers are running. To switch to Presidio later, add those two containers to `docker-compose.yml`, set `PRESIDIO_ANALYZER_API_BASE` and `PRESIDIO_ANONYMIZER_API_BASE` on the `litellm` service, and use `guardrail: presidio` with `pii_entities_config` (omit `PERSON`, or last-name search breaks). No Spring changes are needed.
+
+### LiteLLM UI map
+
+Open `http://localhost:4000/ui`. Logs and Usage are under Observability; Models + Endpoints (including Model Retry Settings and Health Status), Virtual Keys, Playground and Guardrails are under AI Gateway; Teams and Internal Users are under Access Control. Use Logs to confirm which real model answered and whether a fallback happened.
+
+### Run it step by step
+
+1. `.env`: set `OPENROUTER_API_KEY`, a unique `LITELLM_MASTER_KEY` (starts with `sk-`) and a separate `LITELLM_DB_PASSWORD`.
+2. `docker compose up -d`, register the Debezium connector (step 6), and make sure the index contains a customer with last name Smith.
+3. Provide the key to Spring. IntelliJ does not read `.env`, so add `LITELLM_MASTER_KEY=sk-...` (with `=`) to the Run Configuration environment variables, or use the PowerShell snippet below. Stop any process already on port 8081.
+4. Start the app and send the request (Postman or PowerShell).
+5. Watch the Spring log: `AI search request received`, `Sending AI search request to LiteLLM ...`, `LiteLLM returned an AI search response in N ms`, `AI search intent parsed`, `AI customer search completed with N matching results`, `AI search request finished`. Prompts, keys and filter values are never logged.
+
+### Postman
+
+Import `postman\StreamForge-AI-Search.postman_collection.json` (variable `baseUrl` = `http://localhost:8081`). It includes last name Smith, city/state, no-match and invalid-prompt requests. Raise the Postman timeout to at least 60 s; free models can take 10 s or more.
+
+Request body: `{"prompt": "Find customers with last name Smith", "page": 0, "size": 10}`.
+
+Responses are always JSON:
+
+```json
+{ "found": true, "message": null,
+  "filters": { "q": null, "lastName": "Smith", "city": null, "state": null },
+  "results": { "total": 1, "page": 0, "size": 10, "items": [ { "customerId": 1, "firstName": "Jane", "lastName": "Smith" } ] } }
+```
+
+No match returns HTTP 200 with `"found": false`, `"message": "No customers found matching your search."` and `"results": { "total": 0, "items": [] }`. Errors return `{"error": "..."}`: `400` for an invalid body or prompt (1 to 500 characters), `502` when LiteLLM, OpenRouter or Elasticsearch is unavailable or the model output is unusable.
+
+The app runs on the Windows host and reads the gateway key from the `LITELLM_MASTER_KEY` environment variable. Load it from `.env` in the PowerShell session used to start Spring Boot:
+
+```powershell
+$env:LITELLM_MASTER_KEY = (Get-Content .env | Where-Object { $_ -match '^LITELLM_MASTER_KEY=' }) -replace '^LITELLM_MASTER_KEY=', ''
+# Optional: use the other configured LiteLLM alias.
+# $env:LITELLM_MODEL = "chat-quality"
+.\gradlew bootRun
+```
+
+Once the Debezium snapshot has populated the `customer-search` index, call the endpoint directly:
+
+```powershell
+$body = @{ prompt = "Find customers in Austin, Texas"; page = 0; size = 10 } |
+    ConvertTo-Json
+Invoke-RestMethod -Method Post `
+    -Uri "http://localhost:8081/api/customers/ai-search" `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+Or use the NGINX route at `http://localhost:8080/api/customers/ai-search`. NGINX allows POST only on that exact path and does not cache AI requests. The gateway defaults to `chat-default`; set `LITELLM_MODEL=chat-quality` before starting Spring Boot to use the other configured alias. Both currently route to free OpenRouter models, whose availability and rate limits can change. Check `docker compose logs --tail 100 litellm` and the Spring Boot log when the endpoint returns `502`.
+
 ## 10. Troubleshooting
 
 | Symptom | Checks |
@@ -375,6 +487,10 @@ In Kibana (http://localhost:5601, `elastic` / `changeme`): Stack Management → 
 | Spring Boot says port 8081 is already in use | Stop the other instance, or change `server.port` in `application.yml`. |
 | App fails at startup with missing topics | Kafka Streams needs `localserver.public.customer` and `localserver.public.address` to exist. Register the connector and wait for the snapshot first. |
 | Nothing in `customer-search` | Confirm the connector is `RUNNING`, check the `customer-search-documents` topic, and read the app log for `Indexing customer ...`. |
+| AI search returns `502` / "LiteLLM API key is not configured" | Spring did not receive `LITELLM_MASTER_KEY`. Set it in the IntelliJ Run Configuration (`NAME=value`, not `NAME:value`) or in the PowerShell session. Then check `docker compose logs litellm`. |
+| LiteLLM UI: "Not connected to DB!" | Start `litellm-db` (needs `LITELLM_DB_PASSWORD`) and `docker compose up -d litellm`. |
+| UI Playground: "Guardrail ... not found" | A UI-created Presidio guardrail cannot load without Presidio containers. Use `pii-mask` from `config.yaml` and delete the broken one. |
+| AI search is slow or times out | Free OpenRouter models can take 10 s or more or be rate limited. Raise the client timeout and check LiteLLM Logs for fallbacks. |
 | Elasticsearch authentication errors in the app log | Credentials in `application.yml` must match `ELASTIC_PASSWORD` in `docker-compose.yml`. |
 
 Useful commands:

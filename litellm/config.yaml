@@ -1,0 +1,58 @@
+model_list:
+  # Clients call these aliases, so the provider can change without app changes.
+  - model_name: chat-default
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3.5-lightning:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      timeout: 30
+      max_retries: 2
+
+  - model_name: chat-quality
+    litellm_params:
+      model: openrouter/google/gemma-4-31b-it:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      timeout: 60
+
+  - model_name: embedding-default
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Local alternative (run Ollama on the host, then uncomment):
+  # - model_name: chat-local
+  #   litellm_params:
+  #     model: ollama/llama3.1
+  #     api_base: http://host.docker.internal:11434
+
+router_settings:
+  num_retries: 2
+  fallbacks:
+    - chat-default: ["chat-quality"]
+
+litellm_settings:
+  drop_params: true
+
+# Masks PII in prompts before they reach OpenRouter. Last names are intentionally not masked (search filter).
+guardrails:
+  - guardrail_name: pii-mask
+    litellm_params:
+      guardrail: litellm_content_filter
+      mode: pre_call
+      default_on: true
+      patterns:
+        - pattern_type: prebuilt
+          pattern_name: email
+          action: MASK
+        - pattern_type: prebuilt
+          pattern_name: us_phone
+          action: MASK
+        - pattern_type: prebuilt
+          pattern_name: us_ssn
+          action: MASK
+        - pattern_type: prebuilt
+          pattern_name: visa
+          action: MASK
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL

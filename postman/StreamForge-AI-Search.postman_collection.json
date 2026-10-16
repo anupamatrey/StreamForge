@@ -1,0 +1,56 @@
+{
+  "info": {
+    "name": "StreamForge AI Search",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8081" }
+  ],
+  "item": [
+    {
+      "name": "AI search - last name Smith",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/customers/ai-search",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"prompt\": \"Find customers with last name Smith\",\n  \"page\": 0,\n  \"size\": 10\n}"
+        }
+      }
+    },
+    {
+      "name": "AI search - city and state",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/customers/ai-search",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"prompt\": \"Find customers in Austin, Texas\",\n  \"page\": 0,\n  \"size\": 10\n}"
+        }
+      }
+    },
+    {
+      "name": "AI search - no match",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/customers/ai-search",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"prompt\": \"Find customers with last name Zzzzqx\"\n}"
+        }
+      }
+    },
+    {
+      "name": "AI search - invalid (empty prompt, 400)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/customers/ai-search",
+        "body": { "mode": "raw", "raw": "{\n  \"prompt\": \"\"\n}" }
+      }
+    }
+  ]
+}
