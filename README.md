@@ -1,4 +1,4 @@
-# StreamForge: PostgreSQL CDC → Kafka Streams → Elasticsearch (Local Windows Lab)
+# StreamForge: PostgreSQL CDC → Kafka Streams → Elasticsearch + AI Gateway (LiteLLM) (Local Windows Lab)
 
 This guide sets up a local pipeline that captures changes from two PostgreSQL tables (`customer`, `address`), joins them with Kafka Streams into one customer document, and indexes that document in Elasticsearch (viewable in Kibana).
 
