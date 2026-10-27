@@ -40,7 +40,7 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(AiGatewayException.class)
     public ResponseEntity<Map<String, String>> aiGateway(AiGatewayException e) {
-        log.error("LiteLLM request failed", e);
+        log.error("AI gateway request failed: {}", e.getMessage(), e);
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                 .body(Map.of("error", "AI search is currently unavailable"));
     }

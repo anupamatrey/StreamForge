@@ -1,0 +1,17 @@
+{
+  "strategy": { "mode": "fallback", "on_status_codes": [429, 500, 502, 503, 504] },
+  "retry": { "attempts": 2, "on_status_codes": [429, 500, 502, 503, 504] },
+  "request_timeout": 30000,
+  "cache": { "mode": "simple", "max_age": 300 },
+  "targets": [
+    {
+      "provider": "@REPLACE_WITH_OPENROUTER_PROVIDER_SLUG",
+      "override_params": { "model": "nvidia/nemotron-3.5-lightning:free" }
+    },
+    {
+      "provider": "@REPLACE_WITH_OPENROUTER_PROVIDER_SLUG",
+      "override_params": { "model": "google/gemma-4-31b-it:free" },
+      "request_timeout": 60000
+    }
+  ]
+}

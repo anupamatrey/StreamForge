@@ -1,4 +1,7 @@
 spring:
+  config:
+    # Loads .env from the working directory (project root); real env vars still take precedence.
+    import: optional:file:./.env[.properties]
   application:
     name: streamforge
 
@@ -18,10 +21,31 @@ spring:
 
 streamforge:
   ai:
+    # Single switch: AI_GATEWAY_PROVIDER=litellm | portkey
     gateway:
-      base-url: ${LITELLM_BASE_URL:http://localhost:4000}
-      api-key: ${LITELLM_MASTER_KEY:}
-      model: ${LITELLM_MODEL:chat-default}
+      provider: ${AI_GATEWAY_PROVIDER:litellm}
+      base-url: ${streamforge.ai.providers.${streamforge.ai.gateway.provider}.base-url}
+      api-key: ${streamforge.ai.providers.${streamforge.ai.gateway.provider}.api-key}
+      model: ${streamforge.ai.providers.${streamforge.ai.gateway.provider}.model}
+      upstream-provider: ${streamforge.ai.providers.${streamforge.ai.gateway.provider}.upstream-provider:}
+      upstream-api-key: ${streamforge.ai.providers.${streamforge.ai.gateway.provider}.upstream-api-key:}
+      config-id: ${streamforge.ai.providers.${streamforge.ai.gateway.provider}.config-id:}
+    providers:
+      litellm:
+        base-url: ${LITELLM_BASE_URL:http://localhost:4000}
+        api-key: ${LITELLM_MASTER_KEY:}
+        model: ${LITELLM_MODEL:chat-default}
+      portkey:
+        # Request path is appended as /v1/chat/completions, so no /v1 here.
+        base-url: ${PORTKEY_BASE_URL:https://api.portkey.ai}
+        api-key: ${PORTKEY_API_KEY:}
+        # Model id as the upstream provider knows it, e.g. nvidia/nemotron-3.5-lightning:free
+        model: ${PORTKEY_MODEL:}
+        # Leave empty when using a saved provider slug in the model (@slug/model). Inline provider is blocked on some workspaces.
+        upstream-provider: ${PORTKEY_PROVIDER:}
+        upstream-api-key: ${PORTKEY_UPSTREAM_API_KEY:}
+        # If set, sent as x-portkey-config instead of provider headers.
+        config-id: ${PORTKEY_CONFIG_ID:}
 
 server:
   port: 8081

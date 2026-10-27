@@ -47,7 +47,7 @@ class AiCustomerSearchServiceTest {
                         """, MediaType.APPLICATION_JSON));
 
         AiCustomerSearchService service = new AiCustomerSearchService(
-                new AiGatewayProperties(BASE_URL, "test-key", "chat-default"),
+                new AiGatewayProperties("litellm", BASE_URL, "test-key", "chat-default"),
                 JsonMapper.builder().build(),
                 searchService,
                 builder);
@@ -75,7 +75,7 @@ class AiCustomerSearchServiceTest {
                         """, MediaType.APPLICATION_JSON));
 
         AiCustomerSearchService service = new AiCustomerSearchService(
-                new AiGatewayProperties(BASE_URL, "test-key", "chat-default"),
+                new AiGatewayProperties("litellm", BASE_URL, "test-key", "chat-default"),
                 JsonMapper.builder().build(),
                 searchService,
                 builder);
@@ -100,7 +100,7 @@ class AiCustomerSearchServiceTest {
                         """, MediaType.APPLICATION_JSON));
 
         AiCustomerSearchService service = new AiCustomerSearchService(
-                new AiGatewayProperties(BASE_URL, "test-key", "chat-default"),
+                new AiGatewayProperties("litellm", BASE_URL, "test-key", "chat-default"),
                 JsonMapper.builder().build(),
                 mock(CustomerSearchService.class),
                 builder);

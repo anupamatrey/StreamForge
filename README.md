@@ -1,4 +1,4 @@
-# StreamForge: PostgreSQL CDC → Kafka Streams → Elasticsearch + AI Gateway (LiteLLM) (Local Windows Lab)
+# StreamForge: PostgreSQL CDC → Kafka Streams → Elasticsearch + AI Gateway (LiteLLM or Portkey) (Local Windows Lab)
 
 This guide sets up a local pipeline that captures changes from two PostgreSQL tables (`customer`, `address`), joins them with Kafka Streams into one customer document, and indexes that document in Elasticsearch (viewable in Kibana).
 
@@ -52,6 +52,7 @@ Complete steps 1–4 once (logical replication, demo database and tables, Debezi
 |---|---|
 | `docker-compose.yml` | ZooKeeper, Kafka, Kafka Connect (Debezium), Elasticsearch, Kibana, NGINX, LiteLLM |
 | `litellm\config.yaml` | OpenRouter-backed `chat-default` and `chat-quality` model aliases |
+| `portkey\config.json` | Reference Portkey Config (fallback, retry, timeout, cache); paste into the Portkey portal |
 | `connectors\register-connector.json` | Debezium PostgreSQL connector definition |
 | `src\main\resources\application.yml` | Kafka, Elasticsearch, LiteLLM gateway and server settings (port `8081`) |
 | `src\main\java\...\api\AiCustomerSearchController.java` | Natural-language customer search endpoint |
@@ -377,9 +378,47 @@ curl.exe http://localhost:8080/healthz
 
 Parameters: `q` (fuzzy text, max 100 chars), `city`, `state`, `page`, `size` (max 50). Responses carry `X-Cache-Status`. A `502` means the Spring Boot app is not running.
 
-## 9c. AI-assisted customer search through LiteLLM
+## 9c. AI-assisted customer search through an AI gateway (LiteLLM or Portkey)
 
-### How it works
+### Choosing the gateway (single switch)
+
+The app talks to one OpenAI-compatible gateway at a time. Pick it with one setting in `.env`:
+
+```
+AI_GATEWAY_PROVIDER=litellm    # default; self-hosted gateway from docker-compose
+# AI_GATEWAY_PROVIDER=portkey  # hosted Portkey gateway
+```
+
+`application.yml` resolves `streamforge.ai.gateway.*` from `streamforge.ai.providers.<provider>.*`, so no code change is needed to switch. Restart the app after changing it. Spring Boot imports `.env` from the working directory (`optional:file:./.env[.properties]`), so IDE, Gradle and test runs pick it up without Run Configuration variables. Real environment variables still override `.env`. Run from the project root.
+
+| Setting | LiteLLM | Portkey |
+|---|---|---|
+| Base URL | `LITELLM_BASE_URL` (default `http://localhost:4000`) | `PORTKEY_BASE_URL` (default `https://api.portkey.ai`) |
+| Key | `LITELLM_MASTER_KEY` (sent as `Authorization: Bearer`) | `PORTKEY_API_KEY` (sent as `x-portkey-api-key`) |
+| Model | `LITELLM_MODEL` (alias, default `chat-default`) | `PORTKEY_MODEL` (e.g. `@<provider-slug>/nvidia/nemotron-3.5-lightning:free`) |
+| Routing / fallback | `litellm\config.yaml` | Portkey Config: `portkey\config.json` (reference copy), saved in the portal |
+| Provider credentials | `OPENROUTER_API_KEY` in the LiteLLM container | Saved in the Portkey portal (Model Catalog), not in this repo |
+
+Check which gateway served a request in the Spring log. Every AI search log line carries `gateway=<litellm|portkey>`.
+
+### Portkey setup
+
+1. In the Portkey portal open **Model Catalog → Add Provider → OpenRouter**, paste your OpenRouter key and note the slug it creates (for example `@openrouter-integration`).
+2. Set in `.env`:
+   ```
+   AI_GATEWAY_PROVIDER=portkey
+   PORTKEY_API_KEY=<your Portkey API key>
+   PORTKEY_MODEL=@<provider-slug>/nvidia/nemotron-3.5-lightning:free
+   ```
+3. Restart the app and send an AI search. The request appears in the Portkey portal under **Logs**.
+
+Optional settings:
+- `PORTKEY_CONFIG_ID`: a saved Portkey Config ID (`pc-...`). When set, the app sends `x-portkey-config`. `portkey\config.json` is a reference copy for fallback, retry, timeout and cache; replace the `@REPLACE_WITH_OPENROUTER_PROVIDER_SLUG` placeholders with your slug before saving it in the portal.
+- `PORTKEY_PROVIDER` and `PORTKEY_UPSTREAM_API_KEY`: send an inline `x-portkey-provider` with a raw provider key. Leave empty if your workspace has `block_inline_config` enabled (error `inline_provider_blocked`); use the `@slug/model` form instead.
+
+When running on Portkey, LiteLLM is not called, so its container can be stopped. The LiteLLM sections below (aliases, PII guardrail, UI) apply only when `AI_GATEWAY_PROVIDER=litellm`. Portkey does not apply the `pii-mask` guardrail; configure guardrails in the Portkey portal if you need them.
+
+### How it works (LiteLLM)
 
 ```
 Client / Postman → Spring Boot (POST /api/customers/ai-search)
@@ -423,9 +462,9 @@ Open `http://localhost:4000/ui`. Logs and Usage are under Observability; Models 
 
 1. `.env`: set `OPENROUTER_API_KEY`, a unique `LITELLM_MASTER_KEY` (starts with `sk-`) and a separate `LITELLM_DB_PASSWORD`.
 2. `docker compose up -d`, register the Debezium connector (step 6), and make sure the index contains a customer with last name Smith.
-3. Provide the key to Spring. IntelliJ does not read `.env`, so add `LITELLM_MASTER_KEY=sk-...` (with `=`) to the Run Configuration environment variables, or use the PowerShell snippet below. Stop any process already on port 8081.
+3. Provide the settings to Spring. The app imports `.env` from the project root automatically, so no Run Configuration variables are needed. Stop any process already on port 8081.
 4. Start the app and send the request (Postman or PowerShell).
-5. Watch the Spring log: `AI search request received`, `Sending AI search request to LiteLLM ...`, `LiteLLM returned an AI search response in N ms`, `AI search intent parsed`, `AI customer search completed with N matching results`, `AI search request finished`. Prompts, keys and filter values are never logged.
+5. Watch the Spring log: `AI search request received (gateway=...)`, `Sending AI search request to gateway=... at ... using model ...`, `Gateway ... returned an AI search response in N ms`, `AI search intent parsed`, `AI customer search completed with N matching results`, `AI search request finished: gateway=...`. Prompts, keys and filter values are never logged.
 
 ### Postman
 
@@ -443,7 +482,7 @@ Responses are always JSON:
 
 No match returns HTTP 200 with `"found": false`, `"message": "No customers found matching your search."` and `"results": { "total": 0, "items": [] }`. Errors return `{"error": "..."}`: `400` for an invalid body or prompt (1 to 500 characters), `502` when LiteLLM, OpenRouter or Elasticsearch is unavailable or the model output is unusable.
 
-The app runs on the Windows host and reads the gateway key from the `LITELLM_MASTER_KEY` environment variable. Load it from `.env` in the PowerShell session used to start Spring Boot:
+The app runs on the Windows host and imports `.env` from the project root on startup. If you prefer, you can also export the variables in the PowerShell session; real environment variables override `.env`:
 
 ```powershell
 $env:LITELLM_MASTER_KEY = (Get-Content .env | Where-Object { $_ -match '^LITELLM_MASTER_KEY=' }) -replace '^LITELLM_MASTER_KEY=', ''
@@ -487,7 +526,11 @@ Or use the NGINX route at `http://localhost:8080/api/customers/ai-search`. NGINX
 | Spring Boot says port 8081 is already in use | Stop the other instance, or change `server.port` in `application.yml`. |
 | App fails at startup with missing topics | Kafka Streams needs `localserver.public.customer` and `localserver.public.address` to exist. Register the connector and wait for the snapshot first. |
 | Nothing in `customer-search` | Confirm the connector is `RUNNING`, check the `customer-search-documents` topic, and read the app log for `Indexing customer ...`. |
-| AI search returns `502` / "LiteLLM API key is not configured" | Spring did not receive `LITELLM_MASTER_KEY`. Set it in the IntelliJ Run Configuration (`NAME=value`, not `NAME:value`) or in the PowerShell session. Then check `docker compose logs litellm`. |
+| AI search returns `502` / "<gateway> API key is not configured" | The key for the selected gateway is empty (`LITELLM_MASTER_KEY` or `PORTKEY_API_KEY`). Check `.env` is in the project root (the working directory) and restart. Then check `docker compose logs litellm` for LiteLLM. |
+| Log still says `gateway=litellm` after setting Portkey | `AI_GATEWAY_PROVIDER=portkey` was not read. Confirm it is in `.env` in the working directory, or set it as an environment variable, then restart. |
+| Portkey `Following keys are not valid: <slug>` | No provider with that slug exists in Model Catalog. Copy the exact slug from the portal into `PORTKEY_MODEL` (`@slug/model`). |
+| Portkey `Either x-portkey-config or x-portkey-provider header is required` | The model has no `@slug/` prefix and no `PORTKEY_CONFIG_ID` is set. Use `@slug/model` in `PORTKEY_MODEL`. |
+| Portkey `inline_provider_blocked` | The workspace blocks inline providers. Leave `PORTKEY_PROVIDER` empty and use a saved provider via `@slug/model`. |
 | LiteLLM UI: "Not connected to DB!" | Start `litellm-db` (needs `LITELLM_DB_PASSWORD`) and `docker compose up -d litellm`. |
 | UI Playground: "Guardrail ... not found" | A UI-created Presidio guardrail cannot load without Presidio containers. Use `pii-mask` from `config.yaml` and delete the broken one. |
 | AI search is slow or times out | Free OpenRouter models can take 10 s or more or be rate limited. Raise the client timeout and check LiteLLM Logs for fallbacks. |
